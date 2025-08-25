@@ -1,0 +1,334 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+getwd()
+```
+
+```{r}
+library(rvest)
+library(httr)
+library(dplyr)
+library(stringr)
+library(purrr)
+library(readr)
+
+get_player_bio_info_table <- function(url) {
+  res <- GET(url, user_agent("Mozilla/5.0"))
+  page <- read_html(res)
+  
+  labels <- page %>%
+    html_nodes(".info-table__content--regular") %>%
+    html_text2() %>% str_squish()
+  
+  values <- page %>%
+    html_nodes(".info-table__content--bold") %>%
+    html_text2() %>% str_squish()
+  
+  values <- str_replace_all(values, "\\s+", " ")
+  bio <- setNames(values, labels)
+  bio_df <- as_tibble(as.list(bio))
+  
+  colnames(bio_df) <- colnames(bio_df) %>%
+    str_replace_all("\\s|/|:", "") %>%
+    str_replace_all("__+", "") %>%
+    str_replace_all("-", "") %>%
+    str_trim()
+  
+  return(bio_df)
+}
+```
+
+```{r}
+head(all_player_urls)
+```
+```{r}
+example_urls <- c(
+  "https://www.transfermarkt.com/ederson/profil/spieler/238223",
+  "https://www.transfermarkt.com/stefan-ortega/profil/spieler/85941",
+  "https://www.transfermarkt.com/marcus-bettinelli/profil/spieler/116648",
+  "https://www.transfermarkt.com/scott-carson/profil/spieler/14555",
+  "https://www.transfermarkt.com/spike-brits/profil/spieler/1080903",
+  "https://www.transfermarkt.com/max-hudson/profil/spieler/1082283"
+)
+
+```
+
+```{r}
+library(purrr)
+library(dplyr)   # also useful since you’re using mutate
+
+file_path <- "tm_player_bio.csv"
+
+if (file.exists(file_path)) {
+  message("Reading saved player bio data from CSV...")
+  tm_player_bio <- read.csv(file_path)
+} else {
+  message("CSV not found. Scraping player bio data...")
+
+  tm_player_bio <- map2_dfr(
+    all_player_urls,
+    seq_along(all_player_urls),
+    ~ {
+      message("Fetching player ", .y, " of ", length(all_player_urls))
+      Sys.sleep(2)
+      
+      tryCatch(
+        {
+          # Fetch player data
+          df <- get_player_bio_info_table(.x)
+          # Add the URL column
+          df <- df %>% mutate(tm_url = .x)
+          df
+        },
+        error = function(e) {
+          message("Failed to fetch: ", .x)
+          return(tibble(source_url = .x))  # still keep the url if failed
+        }
+      )
+    }
+  )
+
+  # Save to CSV
+  write_csv(tm_player_bio, file_path)
+}
+
+
+```
+
+```{r}
+print(tm_player_bio)
+```
+
+
+#Attempt 2
+```{r}
+# Get ids you already scraped
+scraped_ids <- unique(tm_player_bio$player_index)
+
+# Find failed ones
+failed_urls <- setdiff(all_ids, all_player_urls)
+
+# Get back the URLs
+failed_urls <- all_player_urls[all_ids %in% failed_ids]
+length(all_urls)       # should be 2075
+length(worked_urls)    # should match your successful rows
+length(failed_urls)    # should be 2075 - length(worked_urls)
+
+
+```
+
+
+```{R}
+# Fetch all player bios
+
+file_path <- "tm_player_bio_2.csv"
+
+if (file.exists(file_path)) {
+  message("Reading saved player bio data from CSV...")
+  tm_player_bio_2 <- read_csv(file_path)  # use same variable name
+} else {
+  message("CSV not found. Scraping player bio data...")
+
+tm_player_bio_2 <- map2_dfr(
+  all_player_urls,
+  seq_along(all_player_urls),
+  ~{
+    message("Fetching player ", .y, " of ", length(all_player_urls))
+    Sys.sleep(3)
+    
+    tryCatch(
+      {
+        get_player_bio_info_table(.x)
+      },
+      error = function(e) {
+        message("Failed to fetch: ", .x)
+        return(tibble())  # skip if error
+      }
+    )
+  },
+)
+
+# Save to CSV
+write_csv(tm_player_bio_2, file_path)
+}
+
+head(tm_player_bio_2)
+```
+
+
+
+
+
+
+```{r}
+unique_player_index <- unique(injury_summary_enriched$player_index)
+print(unique_player_index)
+```
+
+
+```{r}
+library(dplyr)
+
+urls_to_rescrape <- all_player_bio %>%
+  filter(player_index %in% failed_index) %>%
+  pull(transfermarkt_url)
+
+print(urls_to_rescrape)
+```
+
+```{r}
+ all_player_bio <- read_csv("all_player_bio.csv")
+all_player_bio %>% 
+  filter(player_index == 1)
+```
+
+#retry for failed urls
+```{r}
+library(dplyr)
+library(purrr)
+library(readr)
+
+file_path <- "all_player_bio.csv"
+
+# Step 1: Load existing successfully scraped data
+if (file.exists(file_path)) {
+  message("Reading saved player bio data from CSV...")
+  all_player_bio <- read_csv(file_path)
+} else {
+  stop("Original CSV not found. You need the base dataset first.")
+}
+
+# Step 2: Scrape only the failed URLs
+failed_player_bio <- map2_dfr(
+  urls_to_rescrape,  # your vector of failed URLs
+  seq_along(urls_to_rescrape),
+  ~{
+    message("Fetching failed player ", .y, " of ", length(urls_to_rescrape))
+    Sys.sleep(3)  # polite pause between requests
+    
+    tryCatch(
+      {
+        get_player_bio_info_table(.x)
+      },
+      error = function(e) {
+        message("Failed again: ", .x)
+        return(tibble())  # skip if error
+      }
+    )
+  },
+)
+```
+
+
+```{r}
+max_index <- max(as.numeric(all_player_bio$player_index))
+failed_player_bio <- failed_player_bio %>%
+  mutate(player_index = seq(max_index + 1, length.out = n()))
+```
+
+```{r}
+head(failed_player_bio)
+
+```
+
+
+```{r}
+all_player_bio_1 %>% 
+  filter(player_index == 1)
+print()
+```
+
+```{R}
+failed_player_bio <- failed_player_bio %>%
+  mutate(player_index = as.numeric(player_index))
+
+# Step 3: Combine with the original data
+all_player_bio_updated <- bind_rows(all_player_bio, failed_player_bio)
+# Step 4: Save updated dataset
+write_csv(all_player_bio_updated, file_path)
+
+# Preview
+print(all_player_bio_updated)
+```
+
+#player bio cleaning
+```{r}
+library(dplyr)
+library(stringr)
+
+all_player_bio_clean <- all_player_bio_updated %>%
+  separate(
+    col = Position,
+    into = c("Position_1", "Position_2"),
+    sep = " - ",
+    fill = "right",   # if there's no "-" it will keep Position_2 as NA
+    extra = "merge") %>%
+  
+  mutate(
+    Fullname = coalesce(Fullname, Nameinhomecountry),
+    Age = str_extract(DateofbirthAge, "(?<=\\().+?(?=\\))") %>% as.numeric(), 
+    Height = Height %>%
+      str_remove(" m") %>%        
+      str_replace(",", ".") %>% 
+      as.numeric(),  
+    Position_2 = ifelse(is.na(Position_2) | Position_2 == "", "Goalkeeper", Position_2), 
+    Foot = if_else(is.na(Foot), "right", Foot)
+
+
+     
+  ) %>%
+  
+   group_by(Position_1) %>%
+  mutate(
+    Height = if_else(
+      is.na(Height),
+      round(mean(Height, na.rm = TRUE), 2),
+      round(Height, 2)
+    )
+  ) %>%
+  ungroup() %>%
+  
+  select(
+    -Nameinhomecountry, -Placeofbirth, -Playeragent, -Joined, 
+    -Contractexpires, -Lastcontractextension, -Outfitter, 
+    -SocialMedia, -Onloanfrom, -Contractthereexpires, 
+    -Contractoption, -Dateofdeath, -DateofbirthAge, -Citizenship,
+    -`2ndclub`, -`3ndclub`
+  ) 
+ 
+
+
+```
+
+```{r}
+print(all_player_bio_clean)
+```
+
+```{r}
+write_csv(all_player_bio_clean, "all_player_bio_clean.csv")
+```
+
+```{r}
+head(injury_summary_enriched)
+```
+
+```{r}
+library(dplyr)
+
+injury_summary_enriched_with_bio <- injury_summary_enriched %>%
+  left_join(
+    all_player_bio_clean,
+    by = "player_index"
+  )
+
+print(injury_summary_enriched_with_bio)
+```
+
+```{r}
+all_player_bio_ederson <- failed_player_bio %>%
+  filter(player_index == 1)
+print(all_player_bio_ederson)
+```
