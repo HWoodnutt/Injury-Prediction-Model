@@ -10,7 +10,7 @@ The primary goal of this project is to provide medical department decision-maker
 - PFM - Injury Prediction.ipynb: The Jupyter notebook used to train and produce the Predictive model using sklearn within Python.
 - Injury Prediction Model.pdf: The project report that goes into greater detail about the thought process and analysis undertaken within this project.
 
-Future Work
+## Future Work
 Future improvements to this model would begin with incorporating Load Data from FBRef. Load data can seriously impact a player's injury likelihood and would certainly benefit this analysis. We should also look to expand the size of the training dataset given we were limited to the top 5 European leagues and scraping issues meant some players were missing. 
 
 
