@@ -1,0 +1,472 @@
+---
+title: "PFM - Injury and Bio Collection"
+output: html_notebook
+---
+
+#Injury Collection Process
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+getwd()
+```
+
+```{r, results='hide', message=FALSE, warning=FALSE}
+if (!require("devtools")){
+  install.packages("devtools")
+}
+if (!require("worldfootballR")){
+  devtools::install_github("JaseZiv/worldfootballR")
+}
+```
+
+```{r}
+library(worldfootballR)
+library(tidyverse)
+library(dplyr)
+```
+
+#Get a list of all player urls from all teams in the top 5 european leagues
+# saved as 'all_player_urls'
+```{r}
+library(worldfootballR)
+library(purrr)
+library(readr)
+library(dplyr)
+
+# File path for saved CSV
+file_path <- "all_player_urls_tm.csv"
+
+if (file.exists(file_path)) {
+  message("Reading saved data from CSV...")
+  all_player_urls <- read_csv(file_path)
+} else {
+  message("CSV not found. Scraping data...")
+
+  # Step 1: Define the leagues and season
+  leagues <- c(
+    "England",  # Premier League
+    "France",   # Ligue 1
+    "Germany",  # Bundesliga
+    "Italy",    # Serie A
+    "Spain"     # La Liga
+  )
+  season_start <- 2024
+
+  # Step 2: Get all team URLs for each league
+  all_team_urls <- map(leagues, ~ tm_league_team_urls(country_name = .x, start_year = season_start)) %>%
+    unlist()
+
+  # Step 3: Get player URLs for each team
+  all_player_urls <- map(all_team_urls, ~ {
+    Sys.sleep(1)  # polite delay to avoid being blocked
+    tryCatch(
+      tm_team_player_urls(.x),
+      error = function(e) {
+        message("Error fetching ", .x)
+        return(NULL)
+      }
+    )
+  }) %>% unlist()
+
+  # Step 4: Save CSV with stable column name
+  write_csv(tibble(all_player_urls = all_player_urls), file_path)
+}
+
+# Step 5: Preview
+print(all_player_urls)
+length(all_player_urls)
+
+```
+# Use the list of player URL's to get a complete list of injuries for all players in the list
+```{r}
+library(purrr)
+library(readr)
+
+# File path for saved CSV
+file_path <- "all_injuries_tm.csv"
+
+if (file.exists(file_path)) {
+  message("Reading saved injury data from CSV...")
+  all_injuries <- read_csv(file_path)
+} else {
+  message("CSV not found. Scraping injury data...")
+
+  all_injuries <- map2_dfr(
+    all_player_urls,
+    seq_along(all_player_urls),
+    ~ {
+      message("Fetching player ", .y, " of ", length(all_player_urls))
+      Sys.sleep(1) # polite delay
+
+      tryCatch(
+        {
+          tm_player_injury_history(.x)
+        },
+        error = function(e) {
+          message("Error fetching ", .x, ": ", e$message)
+          return(NULL)  # skip player if failed
+        }
+      )
+    },
+    .id = "player_index"
+  )
+
+  # Save to CSV for next time
+  write_csv(all_injuries, file_path)
+}
+
+```
+
+```{r}
+# Preview
+head(all_injuries)
+```
+
+
+#Data Filtering (Recent injuries)
+```{r}
+library(dplyr)
+library(stringr)
+
+injuries_filtered <- all_injuries %>%
+  # Extract the first two digits of the season's starting year and convert to numeric
+  filter(as.numeric(substr(season_injured, 1, 2)) >= 21) %>%
+  mutate(season_start = as.numeric(substr(season_injured, 1, 2)))
+
+glimpse(injuries_filtered)
+```
+
+```{r}
+sapply(injuries_filtered, class)
+```
+
+#Data Cleaning
+```{r}
+library(dplyr)
+library(readr)
+
+injuries_filtered <- injuries_filtered %>%
+  mutate(
+    duration = parse_number(duration)  
+    )  
+
+glimpse(injuries_filtered)
+```
+
+
+
+```{r}
+library(dplyr)
+
+injuries_filtered %>%
+  select(
+    player_index, player_name, season_injured, season_start,
+    injury, injured_since, injured_until, duration, games_missed
+  ) %>%
+  arrange((player_index), injured_since) %>%
+  print(n = 20)   # show first 20 rows, adjust n as needed
+```
+
+#create unique list of injuries to allow for injury grouping
+```{r}
+library(dplyr)
+library(readr)
+
+unique_injuries_list <- injuries_filtered %>%
+  select(injury) %>%       # keep only the injury description
+  distinct() %>%           # keep only unique values
+  arrange(injury)          # optional: sort alphabetically
+
+unique_injuries_list
+write_csv(unique_injuries_list, "unique_injuries_list.csv")
+```
+
+#injury list taken offline and grouped by ChatGPT
+#Below the injuries with groupings are read back into R Studio
+```{r}
+library(readr)
+colnames(injuries_grouped_complete) <- c("injury", "injury_group")
+head(injuries_grouped_complete)
+```
+
+#merge actual injury dataset with injury mappings list 
+```{r}
+# Merge with the mapping table
+injuries_filtered <- injuries_filtered %>%
+  left_join(injuries_grouped_complete, by = "injury")
+
+# Check results
+head(injuries_filtered)
+```
+
+#View data type of each column in injuries_filtered
+```{r}
+sapply(injuries_filtered, class)
+```
+
+
+#summarise injury list per player
+```{r}
+library(dplyr)
+
+injury_summary <- injuries_filtered %>%
+  group_by(player_index, player_url, player_name) %>%  # Or whatever column identifies the player
+  summarise(
+    injury_count_last_3_seasons = sum(season_start < 24, na.rm = TRUE),
+    days_missed_last_3_seasons = sum(duration[season_start < 24], na.rm = TRUE),
+    injury_count_last_2_seasons = sum(season_start > 21 & season_start < 24, na.rm = TRUE),
+    days_missed_last_2_seasons = sum(duration[season_start > 21 & season_start < 24], na.rm = TRUE),
+    injury_count_last_1_seasons = sum(season_start == 23, na.rm = TRUE),
+    days_missed_last_1_seasons = sum(duration[season_start == 23], na.rm = TRUE),
+    
+    muscular_injury_count_last_3_seasons = sum(season_start < 24 & injury_group == 'Muscular', na.rm = TRUE),
+    muscular_days_missed_last_3_seasons = sum(duration[season_start < 24 & injury_group == 'Muscular'], na.rm = TRUE),
+    muscular_injury_count_last_2_seasons = sum(season_start > 21 & season_start < 24 & injury_group == 'Muscular', na.rm = TRUE),
+    muscular_days_missed_last_2_seasons = sum(duration[season_start > 21 & season_start < 24 & injury_group == 'Muscular'], na.rm = TRUE),
+    muscular_injury_count_last_1_seasons = sum(season_start == 23 & injury_group == 'Muscular', na.rm = TRUE),
+    muscular_days_missed_last_1_seasons = sum(duration[season_start == 23 & injury_group == 'Muscular'], na.rm = TRUE),
+     
+    skeletal_injury_count_last_3_seasons = sum(season_start < 24 & injury_group == 'Skeletal', na.rm = TRUE),
+    skeletal_days_missed_last_3_seasons = sum(duration[season_start < 24 & injury_group == 'Skeletal'], na.rm = TRUE),
+    skeletal_injury_count_last_2_seasons = sum(season_start > 21 & season_start < 24 & injury_group == 'Skeletal', na.rm = TRUE),
+    skeletal_days_missed_last_2_seasons = sum(duration[season_start > 21 & season_start < 24 & injury_group == 'Skeletal'], na.rm = TRUE),
+    skeletal_injury_count_last_1_seasons = sum(season_start == 23 & injury_group == 'Skeletal', na.rm = TRUE),
+    skeletal_days_missed_last_1_seasons = sum(duration[season_start == 23 & injury_group == 'Skeletal'], na.rm = TRUE),
+    
+    tendon_ligament_injury_count_last_3_seasons = sum(season_start < 24 & injury_group == 'Tendon/Ligament', na.rm = TRUE),
+    tendon_ligament_days_missed_last_3_seasons = sum(duration[season_start < 24 & injury_group == 'Tendon/Ligament'], na.rm = TRUE),
+    tendon_ligament_injury_count_last_2_seasons = sum(season_start > 21 & season_start < 24 & injury_group == 'Tendon/Ligament', na.rm = TRUE),
+    tendon_ligament_days_missed_last_2_seasons = sum(duration[season_start > 21 & season_start < 24 & injury_group == 'Tendon/Ligament'], na.rm = TRUE),
+    tendon_ligament_injury_count_last_1_seasons = sum(season_start == 23 & injury_group == 'Tendon/Ligament', na.rm = TRUE),
+    tendon_ligament_days_missed_last_1_seasons = sum(duration[season_start == 23 & injury_group == 'Tendon/Ligament'], na.rm = TRUE),
+    
+    days_missed_current_season = sum(duration[season_start == 24], na.rm = TRUE),
+
+    )
+
+injury_summary
+```
+
+```{r}
+print(injury_summary)
+write_csv(injury_summary, "injury_summary.csv")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+# BIO DATA
+```{r}
+library(rvest)
+library(httr)
+library(dplyr)
+library(stringr)
+library(purrr)
+library(readr)
+
+get_player_bio_info_table <- function(url) {
+  res <- GET(url, user_agent("Mozilla/5.0"))
+  page <- read_html(res)
+  
+  labels <- page %>%
+    html_nodes(".info-table__content--regular") %>%
+    html_text2() %>% str_squish()
+  
+  values <- page %>%
+    html_nodes(".info-table__content--bold") %>%
+    html_text2() %>% str_squish()
+  
+  values <- str_replace_all(values, "\\s+", " ")
+  bio <- setNames(values, labels)
+  bio_df <- as_tibble(as.list(bio))
+  
+  colnames(bio_df) <- colnames(bio_df) %>%
+    str_replace_all("\\s|/|:", "") %>%
+    str_replace_all("__+", "") %>%
+    str_replace_all("-", "") %>%
+    str_trim()
+  
+  return(bio_df)
+}
+```
+
+```{r}
+head(all_player_urls)
+```
+
+
+```{r}
+library(purrr)
+library(dplyr)
+library(worldfootballR)
+# also useful since you’re using mutate
+
+file_path <- "tm_player_bio_3.csv"
+
+if (file.exists(file_path)) {
+  message("Reading saved player bio data from CSV...")
+  tm_player_bio <- read.csv(file_path)
+} else {
+  message("CSV not found. Scraping player bio data...")
+
+  tm_player_bio_3 <- map2_dfr(
+    failed_urls,
+    seq_along(failed_urls),
+    ~ {
+      message("Fetching player ", .y, " of ", length(failed_urls))
+      Sys.sleep(3) 
+      
+      tryCatch(
+        {
+          # Fetch player data
+          df <- get_player_bio_info_table(.x)
+          # Add the URL column
+          df <- df %>% mutate(tm_url = .x)
+          df
+        },
+        error = function(e) {
+          message("Failed to fetch: ", .x)
+          return(NULL)
+        }
+      )
+    }
+  )
+
+  # Save to CSV
+  write_csv(tm_player_bio_3, file_path)
+}
+
+
+```
+
+```{r}
+# Check counts
+print(tm_player_bio_3)
+```
+
+
+
+
+```{r}
+print(tm_player_bio_3)
+```
+
+
+```{r}
+tm_player_bio_comb <- bind_rows(tm_player_bio, tm_player_bio_2, tm_player_bio_3)
+print(tm_player_bio_comb)
+```
+
+```{r}
+library(dplyr)
+
+tm_player_bio_comb <- tm_player_bio_comb %>%
+  mutate(row_id = row_number())
+
+```
+
+```{r}
+head(tm_player_bio_comb)
+write_csv(tm_player_bio_comb, "tm_player_bio_comb.csv")
+```
+
+
+
+
+#player bio cleaning
+```{r}
+library(dplyr)
+library(stringr)
+library(tidyr)
+
+
+tm_player_bio_cleaned <- tm_player_bio_comb %>%
+  separate(
+    col = Position,
+    into = c("Position_1", "Position_2"),
+    sep = " - ",
+    fill = "right",   # if there's no "-" it will keep Position_2 as NA
+    extra = "merge") %>%
+  
+  mutate(
+    Fullname = coalesce(Fullname, Nameinhomecountry),
+    Age = str_extract(DateofbirthAge, "(?<=\\().+?(?=\\))") %>% as.numeric(), 
+    Height = Height %>%
+      str_remove(" m") %>%        
+      str_replace(",", ".") %>% 
+      as.numeric(),  
+    Position_2 = ifelse(is.na(Position_2) | Position_2 == "", "Goalkeeper", Position_2), 
+    Foot = if_else(is.na(Foot), "right", Foot)
+
+
+     
+  ) %>%
+  
+   group_by(Position_1) %>%
+  mutate(
+    Height = if_else(
+      is.na(Height),
+      round(mean(Height, na.rm = TRUE), 2),
+      round(Height, 2)
+    )
+  ) %>%
+  ungroup() %>%
+  
+  select(
+    -Nameinhomecountry, -Placeofbirth, -Playeragent, -Joined, 
+    -Contractexpires, -Lastcontractextension, -Outfitter, 
+    -SocialMedia, -Onloanfrom, -Contractthereexpires, 
+    -Contractoption, -DateofbirthAge, -Citizenship,
+    -`2ndclub`, -`3ndclub`
+  ) 
+ 
+
+
+```
+
+```{r}
+print(tm_player_bio_cleaned)
+```
+
+```{r}
+write_csv(tm_player_bio_cleaned, "tm_player_bio_cleaned.csv")
+```
+
+```{r}
+head(injury_summary)
+```
+
+
+```{r}
+library(dplyr)
+
+tm_injury_summary_with_bio <- injury_summary %>%
+  inner_join(
+    tm_player_bio_cleaned,
+    by = c("player_url" = "tm_url")
+  )
+
+print(tm_injury_summary_with_bio)
+```
+
+```{r}
+tm_prediction_data <- tm_injury_summary_with_bio %>%
+  select(-Fullname, -row_id, -player_index, -player_url, -Currentclub)
+```
+
+```{r}
+print(tm_prediction_data)
+write_csv(tm_prediction_data, "tm_prediction_data.csv")
+
+```
